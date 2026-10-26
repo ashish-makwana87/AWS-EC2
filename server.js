@@ -1,5 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
+import { performance } from "node:perf_hooks";
 
 dotenv.config();
 
@@ -24,6 +25,41 @@ app.get("/health", (req, res) => {
   res.status(200).json({
     status: "healthy",
     timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/debug/cpu-blocking", (req, res) => {
+  const durationMs = Number(req.query.durationMs ?? 500);
+
+  if (
+    !Number.isInteger(durationMs) ||
+    durationMs < 100 ||
+    durationMs > 1000
+  ) {
+    return res.status(400).json({
+      message: "durationMs must be an integer between 100 and 1000",
+    });
+  }
+
+  const start = performance.now();
+  let iterations = 0;
+  let checksum = 0;
+
+  // Deliberately perform synchronous CPU work.
+  // This blocks the Node.js event loop.
+  while (performance.now() - start < durationMs) {
+    iterations += 1;
+    checksum += Math.sqrt(iterations % 1000);
+  }
+
+  const actualDurationMs = Math.round(performance.now() - start);
+
+  return res.status(200).json({
+    message: "CPU-intensive operation completed",
+    requestedDurationMs: durationMs,
+    actualDurationMs,
+    iterations,
+    checksum: Number(checksum.toFixed(2)),
   });
 });
 
