@@ -8,6 +8,12 @@ This document records how the Node.js Express application was configured to run 
 ssh -i "C:\Users\ashis\Downloads\aws-ec2-node-key.pem" ec2-user@YOUR_PUBLIC_IP
 ```
 
+```
+$env:BASE_URL = "http://13.232.36.183"
+
+node .\scripts\event-loop-benchmark.js
+```
+
 ## 2. Why We Created a systemd Service
 
 Running the application manually with `node server.js` is suitable for local development, but it is not a reliable way to run an application on a server. If the SSH session ends or the process crashes, the application may stop running.
@@ -236,11 +242,6 @@ server {
     listen 80;
     server_name _;
 
-    # Block the CPU-debug endpoint from public access.
-    location = /debug/cpu-blocking {
-        return 404;
-    }
-
     # Forward other requests to Express.
     location / {
         proxy_pass http://127.0.0.1:3000;
@@ -287,7 +288,9 @@ sudo systemctl status nginx --no-pager
 Test the health endpoint through Nginx on the EC2 instance:
 
 ```bash
-curl -i http://127.0.0.1/health
+curl -i "http://127.0.0.1/debug/cpu-blocking?durationMs=500"
+
+curl -i "http://127.0.0.1/health"
 ```
 
 This request goes to port 80, passes through Nginx, and is forwarded to Express on port 3000.
@@ -295,18 +298,10 @@ This request goes to port 80, passes through Nginx, and is forwarded to Express 
 The public health endpoint can also be tested from your computer:
 
 ```text
-http://YOUR_CURRENT_EC2_PUBLIC_IP/health
+Invoke-RestMethod "http://YOUR_CURRENT_EC2_PUBLIC_IP/debug/cpu-blocking?durationMs=500"
 ```
 
 Replace the placeholder with the instance's current public IPv4 address.
-
-Because the CPU-debug endpoint is restricted by Nginx, a public request to it should return HTTP `404`:
-
-```bash
-curl -i "http://127.0.0.1/debug/cpu-blocking?durationMs=500"
-```
-
-Run this particular command on EC2 to verify the Nginx restriction. To test the CPU endpoint itself, use the controlled connection configured for the benchmark.
 
 ## 6. Request Flow
 
@@ -338,3 +333,4 @@ The CPU-debug route is an exception to normal proxying because Nginx blocks publ
 - [ ] Port 3000 is not exposed publicly in the EC2 security group.
 - [ ] SSH port 22 is restricted to the current trusted IP.
 - [ ] The CPU-debug endpoint is not publicly accessible.
+
