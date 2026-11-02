@@ -1,4 +1,3 @@
-
 import { parentPort } from "node:worker_threads";
 import { performance } from "node:perf_hooks";
 
@@ -22,9 +21,10 @@ parentPort.once("message", ({ limit }) => {
   parentPort.postMessage({
     limit,
     checksum: Number(checksum.toFixed(2)),
-    calculationTimeMs,
-    message: "Calculation completed inside Worker Thread",
+    calculationTimeMs
   });
 
   parentPort.close();
 });
+
+

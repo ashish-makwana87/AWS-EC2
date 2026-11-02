@@ -2,7 +2,7 @@
 
 This document records how the Node.js Express application was configured to run reliably on an Amazon Linux 2023 EC2 instance.
 
-## 1: Connect to Instance
+## 1: Connect to Instance 
 
 ```
 ssh -i "C:\Users\ashis\Downloads\aws-ec2-node-key.pem" ec2-user@YOUR_PUBLIC_IP
@@ -14,7 +14,7 @@ $env:BASE_URL = "http://13.232.36.183"
 node .\scripts\event-loop-benchmark.js
 ```
 
-## 2. Why We Created a systemd Service
+## 2. Why We Created a systemd Service 
 
 Running the application manually with `node server.js` is suitable for local development, but it is not a reliable way to run an application on a server. If the SSH session ends or the process crashes, the application may stop running.
 
