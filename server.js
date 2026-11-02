@@ -80,42 +80,41 @@ app.get("/health", (req, res) => {
   });
 });
 
+//CPU-blocking endpoint
 app.get("/debug/cpu-blocking", (req, res) => {
-  const durationMs = Number(req.query.durationMs ?? 500);
+  const limit = Number(req.query.limit ?? 50_000_000);
 
   if (
-    !Number.isInteger(durationMs) ||
-    durationMs < 100 ||
-    durationMs > 1000
+    !Number.isSafeInteger(limit) ||
+    limit < 100_000 ||
+    limit > 50_000_000
   ) {
     return res.status(400).json({
-      message: "durationMs must be an integer between 100 and 1000",
+      message: "limit must be an integer between 100000 and 50000000",
     });
   }
 
   const start = performance.now();
-  let iterations = 0;
+
   let checksum = 0;
 
-  // Deliberately perform synchronous CPU work.
-  // This blocks the Node.js event loop.
-  while (performance.now() - start < durationMs) {
-    iterations += 1;
-    checksum += Math.sqrt(iterations % 1000);
+  for (let i = 0; i < limit; i++) {
+    checksum += Math.sqrt(i % 1000);
   }
 
-  const actualDurationMs = Math.round(performance.now() - start);
+  const calculationTimeMs = Number(
+    (performance.now() - start).toFixed(2)
+  );
 
   return res.status(200).json({
-    message: "CPU-intensive operation completed",
-    requestedDurationMs: durationMs,
-    actualDurationMs,
-    iterations,
+    message: "CPU-intensive operation completed on main thread",
+    limit,
     checksum: Number(checksum.toFixed(2)),
+    calculationTimeMs,
   });
 });
 
-// Worker Thread route
+// Worker Thread endpoint
 app.get("/debug/cpu-worker", async (req, res, next) => {
   const limit = Number(req.query.limit ?? 10_000_000);
 
