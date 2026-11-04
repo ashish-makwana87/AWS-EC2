@@ -334,3 +334,134 @@ The CPU-debug route is an exception to normal proxying because Nginx blocks publ
 - [ ] SSH port 22 is restricted to the current trusted IP.
 - [ ] The CPU-debug endpoint is not publicly accessible.
 
+
+# Performance Benchmarking
+
+This project uses Autocannon to benchmark HTTP performance and compare CPU-intensive operations executed on the Node.js main thread versus Worker Threads.
+
+### 1. Install Autocannon
+
+Autocannon is installed as a development dependency:
+
+```powershell
+npm install --save-dev autocannon
+```
+
+### 2. Baseline HTTP Benchmark
+
+Run a baseline benchmark against the health endpoint without an additional CPU-intensive workload:
+
+```powershell
+npx autocannon -c 10 -d 30 -p 1 "http://<EC2_PUBLIC_IP>/health"
+```
+
+Options:
+
+- `-c 10`: Use 10 concurrent connections.
+- `-d 30`: Run the benchmark for 30 seconds.
+- `-p 1`: Use one request per connection at a time.
+
+### 3. Controlled Performance Benchmark
+
+The project includes a controlled benchmark script:
+
+```text
+scripts/
+└── controlled-benchmark.js
+```
+
+The script runs two workloads concurrently:
+
+1. Autocannon sends HTTP requests to `/health`.
+2. The script continuously sends CPU-intensive requests to either the blocking or Worker Thread endpoint.
+
+Benchmark configuration:
+
+- 10 concurrent HTTP connections.
+- 60-second Autocannon duration.
+- 50,000,000 calculation iterations per CPU request.
+- CPU workload starts approximately one second after Autocannon starts.
+
+#### Test main-thread blocking
+
+```powershell
+node .\scripts\controlled-benchmark.js "http://<EC2_PUBLIC_IP>" blocking
+```
+
+This executes the CPU-intensive calculation on the Node.js main thread.
+
+#### Test Worker Threads
+
+```powershell
+node .\scripts\controlled-benchmark.js "http://<EC2_PUBLIC_IP>" worker
+```
+
+This executes the same calculation inside a Worker Thread.
+
+Run the two experiments separately to avoid overlapping workloads.
+
+### 4. EC2 CPU and Memory Monitoring
+
+Connect to the EC2 instance through SSH before running the monitoring commands.
+
+#### Identify the Node.js process
+
+```bash
+PID=$(sudo systemctl show -p MainPID --value aws-ec2-app)
+```
+
+Verify the process:
+
+```bash
+ps -p "$PID" -o pid,ppid,cmd
+```
+
+#### Monitor Node.js process CPU and memory
+
+```bash
+top -p "$PID"
+```
+
+#### Monitor individual Node.js threads
+
+```bash
+top -H -p "$PID"
+```
+
+This is useful for observing individual threads when Worker Threads are executing CPU-intensive calculations.
+
+#### Check overall EC2 memory
+
+```bash
+free -h
+```
+
+#### Monitor overall system CPU and memory activity
+
+```bash
+vmstat 1
+```
+
+Press `q` to exit `top` and `Ctrl + C` to stop `vmstat`.
+
+### 5. Metrics to Compare
+
+The following metrics are collected during performance testing:
+
+| Metric | Description |
+|---|---|
+| Requests/sec | Number of HTTP requests handled per second |
+| P50 latency | Median response time |
+| P97.5 latency | Response-time threshold for 97.5% of requests |
+| P99 latency | Response-time threshold for 99% of requests |
+| CPU usage | CPU utilization of the Node.js process |
+| Memory usage | Resident memory (RES) used by the Node.js process |
+
+
+### 6. Important Notes
+
+- Run benchmarks from your local machine, not on the EC2 instance being measured, to avoid competing with the application for CPU resources.
+- Replace `<EC2_PUBLIC_IP>` with the instance's current public IPv4 address.
+- Run blocking and Worker Thread experiments separately using identical benchmark configurations.
+- CPU and memory readings from `top` are observations at a particular point in time. For more rigorous comparisons, collect repeated samples throughout each benchmark.
+- Worker Threads improve main-thread responsiveness but introduce additional CPU and memory overhead.

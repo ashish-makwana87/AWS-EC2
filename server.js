@@ -2,6 +2,7 @@ import express from "express";
 import dotenv from "dotenv";
 import { performance } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
+import { retryRequest } from "./utils/retry.js";
 
 dotenv.config();
 
@@ -9,6 +10,9 @@ const app = express();
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "127.0.0.1";
+const MOCK_DEPENDENCY_URL = process.env.MOCK_DEPENDENCY_URL;
+
+console.log("Mock dependency URL:", MOCK_DEPENDENCY_URL);
 
 app.disable("x-powered-by");
 app.use(express.json());
@@ -63,14 +67,6 @@ function runCalculationInWorker(limit, timeoutMs = 10_000) {
   });
 }
 
-
-// Basic API endpoint
-app.get("/", (req, res) => {
-  res.status(200).json({
-    message: "AWS-EC2 Node.js server is running",
-    environment: process.env.NODE_ENV || "development",
-  });
-});
 
 // Health check endpoint
 app.get("/health", (req, res) => {
@@ -138,6 +134,69 @@ app.get("/debug/cpu-worker", async (req, res, next) => {
   } catch (error) {
     return next(error);
   }
+});
+
+// Retry endpoint
+app.get("/debug/retry", async (req, res) => {
+
+  if (!MOCK_DEPENDENCY_URL) {
+    return res.status(500).json({
+      message: "MOCK_DEPENDENCY_URL is not configured",
+    });
+  }
+
+  let attempts = 0;
+
+  try {
+    const response = await retryRequest(
+      async ({ attempt }) => {
+        attempts = attempt;
+
+        console.log(`Calling dependency: Attempt ${attempt}`);
+
+        return fetch(MOCK_DEPENDENCY_URL);
+      },
+      {
+        maxAttempts: 3,
+        delays: [100, 500],
+
+        onRetry: ({ attempt, nextAttempt, delayMs, error }) => {
+          console.warn(
+            `Attempt ${attempt} failed. Retrying attempt ${nextAttempt} in ${delayMs}ms. Error: ${error.message}`
+          );
+        },
+      }
+    );
+
+    const data = await response.json();
+
+    return res.status(200).json({
+      message: "Dependency request successful",
+      totalAttempts: attempts,
+      dependency: data,
+    });
+  } catch (error) {
+    console.error("Dependency request failed:", {
+  message: error.message,
+  cause: error.cause,
+  code: error.cause?.code,
+});
+
+    return res.status(error.status || 502).json({
+      message: "Dependency request failed after retry attempts",
+      totalAttempts: attempts,
+      error: error.message,
+    });
+  }
+});
+
+
+// Basic API endpoint
+app.get("/", (req, res) => {
+  res.status(200).json({
+    message: "AWS-EC2 Node.js server is running",
+    environment: process.env.NODE_ENV || "development",
+  });
 });
 
 
