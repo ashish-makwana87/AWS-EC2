@@ -19,7 +19,7 @@ export class HttpError extends Error {
   }
 }
 
-function isRetryableError(error) {
+export function isRetryableError(error) {
   // Retry selected HTTP responses.
   if (error instanceof HttpError) {
     return (

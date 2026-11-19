@@ -2,7 +2,8 @@ import express from "express";
 import dotenv from "dotenv";
 import { performance } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
-import { retryRequest } from "./utils/retry.js";
+import { retryRequest, isRetryableError } from "./utils/retry.js";
+import { CircuitBreaker, CircuitOpenError } from "./utils/circuitBreaker.js";
 
 dotenv.config();
 
@@ -12,16 +13,13 @@ const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "127.0.0.1";
 const MOCK_DEPENDENCY_URL = process.env.MOCK_DEPENDENCY_URL;
 
-console.log("Mock dependency URL:", MOCK_DEPENDENCY_URL);
-
 app.disable("x-powered-by");
 app.use(express.json());
-
 
 function runCalculationInWorker(limit, timeoutMs = 10_000) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(
-      new URL("./workers/calculation.worker.js", import.meta.url)
+      new URL("./workers/calculation.worker.js", import.meta.url),
     );
 
     let settled = false;
@@ -29,9 +27,7 @@ function runCalculationInWorker(limit, timeoutMs = 10_000) {
     const timeout = setTimeout(() => {
       worker.terminate().catch(() => {});
 
-      finish(
-        new Error(`Worker exceeded the ${timeoutMs}ms time limit`)
-      );
+      finish(new Error(`Worker exceeded the ${timeoutMs}ms time limit`));
     }, timeoutMs);
 
     function finish(error, result) {
@@ -67,7 +63,6 @@ function runCalculationInWorker(limit, timeoutMs = 10_000) {
   });
 }
 
-
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -80,11 +75,7 @@ app.get("/health", (req, res) => {
 app.get("/debug/cpu-blocking", (req, res) => {
   const limit = Number(req.query.limit ?? 50_000_000);
 
-  if (
-    !Number.isSafeInteger(limit) ||
-    limit < 100_000 ||
-    limit > 50_000_000
-  ) {
+  if (!Number.isSafeInteger(limit) || limit < 100_000 || limit > 50_000_000) {
     return res.status(400).json({
       message: "limit must be an integer between 100000 and 50000000",
     });
@@ -98,9 +89,7 @@ app.get("/debug/cpu-blocking", (req, res) => {
     checksum += Math.sqrt(i % 1000);
   }
 
-  const calculationTimeMs = Number(
-    (performance.now() - start).toFixed(2)
-  );
+  const calculationTimeMs = Number((performance.now() - start).toFixed(2));
 
   return res.status(200).json({
     message: "CPU-intensive operation completed on main thread",
@@ -114,11 +103,7 @@ app.get("/debug/cpu-blocking", (req, res) => {
 app.get("/debug/cpu-worker", async (req, res, next) => {
   const limit = Number(req.query.limit ?? 10_000_000);
 
-  if (
-    !Number.isSafeInteger(limit) ||
-    limit < 100_000 ||
-    limit > 50_000_000
-  ) {
+  if (!Number.isSafeInteger(limit) || limit < 100_000 || limit > 50_000_000) {
     return res.status(400).json({
       message: "limit must be an integer between 100000 and 50000000",
     });
@@ -136,9 +121,23 @@ app.get("/debug/cpu-worker", async (req, res, next) => {
   }
 });
 
+// Circuit Breaker instance
+const dependencyCircuitBreaker = new CircuitBreaker({
+  failureThreshold: 3,
+  openDuration: 10_000,
+  halfOpenMaxCalls: 1,
+
+  shouldCountFailure: isRetryableError,
+
+  onStateChange: ({ previousState, newState }) => {
+    console.log(
+      `Dependency circuit state changed: ${previousState} → ${newState}`,
+    );
+  },
+});
+
 // Retry endpoint
 app.get("/debug/retry", async (req, res) => {
-
   if (!MOCK_DEPENDENCY_URL) {
     return res.status(500).json({
       message: "MOCK_DEPENDENCY_URL is not configured",
@@ -161,11 +160,11 @@ app.get("/debug/retry", async (req, res) => {
         delays: [100, 500],
 
         onRetry: ({ attempt, nextAttempt, delayMs, error }) => {
-          console.warn(
-            `Attempt ${attempt} failed. Retrying attempt ${nextAttempt} in ${delayMs}ms. Error: ${error.message}`
+          console.log(
+            `Attempt ${attempt} failed. Retrying attempt ${nextAttempt} in ${delayMs}ms. Error: ${error.message}`,
           );
         },
-      }
+      },
     );
 
     const data = await response.json();
@@ -176,11 +175,7 @@ app.get("/debug/retry", async (req, res) => {
       dependency: data,
     });
   } catch (error) {
-    console.error("Dependency request failed:", {
-  message: error.message,
-  cause: error.cause,
-  code: error.cause?.code,
-});
+    console.error("Dependency request failed");
 
     return res.status(error.status || 502).json({
       message: "Dependency request failed after retry attempts",
@@ -190,6 +185,67 @@ app.get("/debug/retry", async (req, res) => {
   }
 });
 
+// Circuit breaker endpoint
+app.get("/debug/resilience", async (req, res) => {
+  if (!MOCK_DEPENDENCY_URL) {
+    return res.status(500).json({
+      message: "MOCK_DEPENDENCY_URL is not configured",
+    });
+  }
+
+  let attempts = 0;
+
+  try {
+    const response = await dependencyCircuitBreaker.execute(async () => {
+      return retryRequest(
+        async ({ attempt }) => {
+          attempts = attempt;
+
+          console.log(`Calling dependency: Attempt ${attempt}`);
+
+          return fetch(MOCK_DEPENDENCY_URL);
+        },
+        {
+          maxAttempts: dependencyCircuitBreaker.state === "HALF_OPEN" ? 1 : 3,
+          delays:
+            dependencyCircuitBreaker.state === "HALF_OPEN" ? [] : [100, 500],
+
+          onRetry: ({ attempt, nextAttempt, delayMs, error }) => {
+            console.warn(
+              `Attempt ${attempt} failed. Retrying attempt ${nextAttempt} in ${delayMs}ms. Error: ${error.message}`,
+            );
+          },
+        },
+      );
+    });
+
+    const data = await response.json();
+
+    return res.status(200).json({
+      message: "Dependency request successful",
+      totalAttempts: attempts,
+      circuitState: dependencyCircuitBreaker.state,
+      dependency: data,
+    });
+  } catch (error) {
+    console.error("Dependency resilience request failed:", error.message);
+
+    if (error instanceof CircuitOpenError) {
+      return res.status(503).json({
+        message: "Dependency circuit is unavailable",
+        circuitState: dependencyCircuitBreaker.state,
+        retryAfterMs: error.retryAfterMs,
+      });
+    }
+
+    return res.status(error.status || 502).json({
+      message: "Dependency request failed after retry attempts",
+      totalAttempts: attempts,
+      circuitState: dependencyCircuitBreaker.state,
+      error: error.message,
+    });
+  }
+});
 
 // Basic API endpoint
 app.get("/", (req, res) => {
@@ -198,7 +254,6 @@ app.get("/", (req, res) => {
     environment: process.env.NODE_ENV || "development",
   });
 });
-
 
 // Handle unknown routes
 app.use((req, res) => {
