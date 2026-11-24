@@ -126,14 +126,7 @@ const dependencyCircuitBreaker = new CircuitBreaker({
   failureThreshold: 3,
   openDuration: 10_000,
   halfOpenMaxCalls: 1,
-
   shouldCountFailure: isRetryableError,
-
-  onStateChange: ({ previousState, newState }) => {
-    console.log(
-      `Dependency circuit state changed: ${previousState} → ${newState}`,
-    );
-  },
 });
 
 // Retry endpoint

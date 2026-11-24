@@ -19,7 +19,6 @@ export class CircuitBreaker {
     failureThreshold = 3,
     openDuration = 10_000,
     halfOpenMaxCalls = 1,
-    onStateChange,
     shouldCountFailure = () => true,
   } = {}) {
     if (!Number.isInteger(failureThreshold) || failureThreshold < 1) {
@@ -34,17 +33,12 @@ export class CircuitBreaker {
       throw new RangeError("halfOpenMaxCalls must be a positive integer");
     }
 
-    if (onStateChange !== undefined && typeof onStateChange !== "function") {
-      throw new TypeError("onStateChange must be a function");
-    }
-
     if (typeof shouldCountFailure !== "function") {
       throw new TypeError("shouldCountFailure must be a function");
     }
     this.failureThreshold = failureThreshold;
     this.openDuration = openDuration;
     this.halfOpenMaxCalls = halfOpenMaxCalls;
-    this.onStateChange = onStateChange;
 
     this.state = CIRCUIT_STATES.CLOSED;
     this.failureCount = 0;
@@ -64,11 +58,6 @@ export class CircuitBreaker {
     this.state = newState;
 
     console.log(`Circuit breaker state transitioned: ${previousState} → ${newState}`);
-
-    this.onStateChange?.({
-      previousState,
-      newState,
-    });
   }
 
   openCircuit() {
