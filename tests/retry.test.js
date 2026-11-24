@@ -1,6 +1,4 @@
-import { test } from "node:test";
-import assert from "node:assert/strict";
-
+import { describe, it, expect, jest } from "@jest/globals";
 import {
   retryRequest,
   HttpError,
@@ -15,13 +13,17 @@ function createResponse(status, body = {}) {
   });
 }
 
-// Test 1: Temporary failures followed by success
-test("should retry temporary failures and eventually succeed", async () => {
-  let attempts = 0;
-  const retryEvents = [];
+describe("retryRequest", () => {
+  // =================================
+  // Test 1: Temporary failures followed by success
+  // =================================
 
-  const response = await retryRequest(
-    async () => {
+  it("should retry temporary failures and eventually succeed", async () => {
+    let attempts = 0;
+
+    const onRetry = jest.fn();
+
+    const operation = jest.fn(async () => {
       attempts++;
 
       if (attempts <= 2) {
@@ -29,84 +31,66 @@ test("should retry temporary failures and eventually succeed", async () => {
       }
 
       return createResponse(200, { success: true });
-    },
-    {
+    });
+
+    const response = await retryRequest(operation, {
       maxAttempts: 3,
       delays: [0, 0],
-      onRetry: (event) => retryEvents.push(event),
-    }
-  );
+      onRetry,
+    });
 
-  const data = await response.json();
+    const data = await response.json();
 
-  assert.equal(attempts, 3);
-  assert.equal(response.status, 200);
-  assert.equal(data.success, true);
-  assert.equal(retryEvents.length, 2);
+    expect(operation).toHaveBeenCalledTimes(3);
+    expect(response.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(onRetry).toHaveBeenCalledTimes(2);
+  });
 
-  console.log("Test 1 passed: Temporary failures followed by success");
-});
+  // =================================
+  // Test 2: All attempts fail
+  // =================================
 
-// Test 2: All attempts fail
-test("should stop after maximum attempts when all requests fail", async () => {
-  let attempts = 0;
+  it("should stop after maximum attempts when all requests fail", async () => {
+    const operation = jest.fn(async () => createResponse(503));
 
-  await assert.rejects(
-    retryRequest(
-      async () => {
-        attempts++;
-        return createResponse(503);
-      },
-      {
-        maxAttempts: 3,
-        delays: [0, 0],
-      }
-    ),
-    (error) => {
-      assert.ok(error instanceof HttpError);
-      assert.equal(error.status, 503);
-      return true;
-    }
-  );
+    const requestPromise = retryRequest(operation, {
+      maxAttempts: 3,
+      delays: [0, 0],
+    });
 
-  assert.equal(attempts, 3);
+    await expect(requestPromise).rejects.toBeInstanceOf(HttpError);
+    await expect(requestPromise).rejects.toHaveProperty("status", 503);
 
-  console.log("Test 2 passed: Maximum attempts respected");
-});
+    expect(operation).toHaveBeenCalledTimes(3);
+  });
 
-// Test 3: Non-retryable HTTP error
-test("should not retry non-retryable HTTP errors", async () => {
-  let attempts = 0;
+  // =================================
+  // Test 3: Non-retryable HTTP error
+  // =================================
 
-  await assert.rejects(
-    retryRequest(
-      async () => {
-        attempts++;
-        return createResponse(400);
-      },
-      {
-        maxAttempts: 3,
-        delays: [0, 0],
-      }
-    ),
-    (error) => {
-      assert.ok(error instanceof HttpError);
-      assert.equal(error.status, 400);
-      return true;
-    }
-  );
+  it("should not retry non-retryable HTTP errors", async () => {
+    const operation = jest.fn(async () => createResponse(400));
 
-  assert.equal(attempts, 1);
+    const requestPromise = retryRequest(operation, {
+      maxAttempts: 3,
+      delays: [0, 0],
+    });
 
-  console.log("Test 3 passed: Non-retryable error fails immediately");
-});
+    await expect(requestPromise).rejects.toBeInstanceOf(HttpError);
+    await expect(requestPromise).rejects.toHaveProperty("status", 400);
 
-// Test 4: Temporary network failure followed by success
-test("should retry recognized network errors", async () => {
-  let attempts = 0;
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
 
-  const response = await retryRequest(
-    async () => {
+  // =================================
+  // Test 4: Temporary network failure followed by success
+  // =================================
+
+  it("should retry recognized network errors", async () => {
+    let attempts = 0;
+
+    const operation = jest.fn(async () => {
       attempts++;
 
       if (attempts === 1) {
@@ -116,31 +100,31 @@ test("should retry recognized network errors", async () => {
       }
 
       return createResponse(200, { success: true });
-    },
-    {
+    });
+
+    const response = await retryRequest(operation, {
       maxAttempts: 3,
       delays: [0, 0],
-    }
-  );
+    });
 
-  assert.equal(attempts, 2);
-  assert.equal(response.status, 200);
+    expect(operation).toHaveBeenCalledTimes(2);
+    expect(response.status).toBe(200);
+  });
 
-  console.log("Test 4 passed: Network failure followed by success");
-});
+  // =================================
+  // Test 5: Invalid retry configuration
+  // =================================
 
-// Test 5: Invalid retry configuration
-test("should reject invalid retry configuration", async () => {
-  await assert.rejects(
-    retryRequest(
-      async () => createResponse(200),
-      {
-        maxAttempts: 0,
-        delays: [],
-      }
-    ),
-    RangeError
-  );
+  it("should reject invalid retry configuration", async () => {
+    const operation = jest.fn(async () => createResponse(200));
 
-  console.log("Test 5 passed: Invalid configuration rejected");
+    const requestPromise = retryRequest(operation, {
+      maxAttempts: 0,
+      delays: [],
+    });
+
+    await expect(requestPromise).rejects.toBeInstanceOf(RangeError);
+
+    expect(operation).not.toHaveBeenCalled();
+  });
 });

@@ -4,7 +4,8 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "test": "node --test",
+    "lint": "eslint",
+    "test": "cross-env NODE_OPTIONS=--experimental-vm-modules jest",
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
@@ -25,7 +26,12 @@
     "express": "^5.3.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "autocannon": "^8.0.0",
+    "cross-env": "^10.1.0",
+    "eslint": "^10.15.0",
+    "globals": "^17.14.0",
+    "jest": "^30.5.2",
     "nodemon": "^3.1.14"
   }
 }
