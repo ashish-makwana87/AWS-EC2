@@ -29,6 +29,11 @@ export function isRetryableError(error) {
     );
   }
 
+  // Retry native Node.js timeout errors.
+  if (error?.name === "TimeoutError") {
+    return true;
+  }
+
   // Retry recognized temporary network failures.
   const errorCode = error?.cause?.code ?? error?.code;
 

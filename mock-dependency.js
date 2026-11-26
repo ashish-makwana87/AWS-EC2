@@ -1,9 +1,11 @@
 import express from "express";
 import dotenv from "dotenv";
+import { correlationIdMiddleware } from "./utils/correlationId.js";
 
 dotenv.config();
 
 const app = express();
+app.use(correlationIdMiddleware);
 
 const PORT = Number(process.env.MOCK_PORT ?? 4000);
 const HOST = process.env.MOCK_HOST ?? "127.0.0.1";
@@ -49,14 +51,15 @@ app.get("/dependency", async (req, res) => {
   const attempt = requestCount;
 
   console.log(
-    `[${MOCK_MODE}] Dependency request received: Attempt ${attempt}`
+    `[ID:${req.correlationId}] [MODE:${MOCK_MODE}] Dependency request received: Attempt ${attempt}`
   );
 
   // MODE 1: Continuous failures
   if (MOCK_MODE === "failure") {
-    console.log(`Attempt ${attempt}: Simulating HTTP 503`);
+    console.log(`[ID:${req.correlationId}] Attempt ${attempt}: Simulating HTTP 503`);
 
     return res.status(503).json({
+      correlationId: req.correlationId,
       success: false,
       message: "Mock service continuously unavailable",
       mode: MOCK_MODE,
@@ -69,9 +72,10 @@ app.get("/dependency", async (req, res) => {
     MOCK_MODE === "temporary" &&
     attempt <= FAIL_FIRST_N_REQUESTS
   ) {
-    console.log(`Attempt ${attempt}: Simulating HTTP 503`);
+    console.log(`[ID:${req.correlationId}] Attempt ${attempt}: Simulating HTTP 503`);
 
     return res.status(503).json({
+      correlationId: req.correlationId,
       success: false,
       message: "Mock service temporarily unavailable",
       mode: MOCK_MODE,
@@ -82,7 +86,7 @@ app.get("/dependency", async (req, res) => {
   // MODE 3: Slow dependency
   if (MOCK_MODE === "slow") {
     console.log(
-      `Attempt ${attempt}: Delaying response by ${MOCK_DELAY_MS}ms`
+      `[ID:${req.correlationId}] Attempt ${attempt}: Delaying response by ${MOCK_DELAY_MS}ms`
     );
 
     await new Promise((resolve) =>
@@ -92,9 +96,10 @@ app.get("/dependency", async (req, res) => {
 
   // MODE 4: Healthy dependency
   // Also reached after temporary and slow mode.
-  console.log(`Attempt ${attempt}: Returning HTTP 200`);
+  console.log(`[ID:${req.correlationId}] Attempt ${attempt}: Returning HTTP 200`);
 
   return res.status(200).json({
+    correlationId: req.correlationId,
     success: true,
     message: "Mock dependency request successful",
     mode: MOCK_MODE,

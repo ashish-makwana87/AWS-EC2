@@ -1,8 +1,5 @@
 import { describe, it, expect, jest } from "@jest/globals";
-import {
-  retryRequest,
-  HttpError,
-} from "../utils/retry.js";
+import { retryRequest, HttpError, isRetryableError } from "../utils/retry.js";
 
 function createResponse(status, body = {}) {
   return new Response(JSON.stringify(body), {
@@ -126,5 +123,15 @@ describe("retryRequest", () => {
     await expect(requestPromise).rejects.toBeInstanceOf(RangeError);
 
     expect(operation).not.toHaveBeenCalled();
+  });
+
+  // =================================
+  // Test 6: Timeout classification
+  // =================================
+
+  it("should treat native timeout errors as retryable", () => {
+    const error = new DOMException("The operation timed out", "TimeoutError");
+
+    expect(isRetryableError(error)).toBe(true);
   });
 });
