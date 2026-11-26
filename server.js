@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
 import { retryRequest, isRetryableError } from "./utils/retry.js";
 import { CircuitBreaker, CircuitOpenError } from "./utils/circuitBreaker.js";
+import { correlationIdMiddleware } from "./utils/correlationId.js";
 
 dotenv.config();
 
@@ -13,7 +14,23 @@ const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "127.0.0.1";
 const MOCK_DEPENDENCY_URL = process.env.MOCK_DEPENDENCY_URL;
 
+const DEPENDENCY_TIMEOUT_MS = Number(process.env.DEPENDENCY_TIMEOUT_MS ?? 2000);
+
+if (!Number.isInteger(DEPENDENCY_TIMEOUT_MS) || DEPENDENCY_TIMEOUT_MS <= 0) {
+  throw new Error("DEPENDENCY_TIMEOUT_MS must be a positive integer");
+}
+
+function fetchDependency(correlationId) {
+  return fetch(MOCK_DEPENDENCY_URL, {
+    signal: AbortSignal.timeout(DEPENDENCY_TIMEOUT_MS),
+    headers: {
+      "x-correlation-id": correlationId,
+    },
+  });
+}
+
 app.disable("x-powered-by");
+app.use(correlationIdMiddleware);
 app.use(express.json());
 
 function runCalculationInWorker(limit, timeoutMs = 10_000) {
@@ -144,9 +161,11 @@ app.get("/debug/retry", async (req, res) => {
       async ({ attempt }) => {
         attempts = attempt;
 
-        console.log(`Calling dependency: Attempt ${attempt}`);
+        console.log(
+          `[${req.correlationId}] Calling dependency: Attempt ${attempt}`,
+        );
 
-        return fetch(MOCK_DEPENDENCY_URL);
+        return fetchDependency(req.correlationId);
       },
       {
         maxAttempts: 3,
@@ -154,7 +173,7 @@ app.get("/debug/retry", async (req, res) => {
 
         onRetry: ({ attempt, nextAttempt, delayMs, error }) => {
           console.log(
-            `Attempt ${attempt} failed. Retrying attempt ${nextAttempt} in ${delayMs}ms. Error: ${error.message}`,
+            `[${req.correlationId}] Attempt ${attempt} failed. Retrying attempt ${nextAttempt} in ${delayMs}ms. Error: ${error.message}`,
           );
         },
       },
@@ -163,14 +182,16 @@ app.get("/debug/retry", async (req, res) => {
     const data = await response.json();
 
     return res.status(200).json({
+      correlationId: req.correlationId,
       message: "Dependency request successful",
       totalAttempts: attempts,
       dependency: data,
     });
   } catch (error) {
-    console.error("Dependency request failed");
+    console.error(`[${req.correlationId}] Dependency request failed`);
 
     return res.status(error.status || 502).json({
+      correlationId: req.correlationId,
       message: "Dependency request failed after retry attempts",
       totalAttempts: attempts,
       error: error.message,
@@ -194,9 +215,11 @@ app.get("/debug/resilience", async (req, res) => {
         async ({ attempt }) => {
           attempts = attempt;
 
-          console.log(`Calling dependency: Attempt ${attempt}`);
+          console.log(
+            `[${req.correlationId}] Calling dependency: Attempt ${attempt}`,
+          );
 
-          return fetch(MOCK_DEPENDENCY_URL);
+          return fetchDependency(req.correlationId);
         },
         {
           maxAttempts: dependencyCircuitBreaker.state === "HALF_OPEN" ? 1 : 3,
@@ -204,8 +227,8 @@ app.get("/debug/resilience", async (req, res) => {
             dependencyCircuitBreaker.state === "HALF_OPEN" ? [] : [100, 500],
 
           onRetry: ({ attempt, nextAttempt, delayMs, error }) => {
-            console.warn(
-              `Attempt ${attempt} failed. Retrying attempt ${nextAttempt} in ${delayMs}ms. Error: ${error.message}`,
+            console.log(
+              `[${req.correlationId}] Attempt ${attempt} failed. Retrying attempt ${nextAttempt} in ${delayMs}ms. Error: ${error.message}`,
             );
           },
         },
@@ -215,16 +238,18 @@ app.get("/debug/resilience", async (req, res) => {
     const data = await response.json();
 
     return res.status(200).json({
+      correlationId: req.correlationId,
       message: "Dependency request successful",
       totalAttempts: attempts,
       circuitState: dependencyCircuitBreaker.state,
       dependency: data,
     });
   } catch (error) {
-    console.error("Dependency resilience request failed:", error.message);
+    console.error(`[${req.correlationId}] Dependency resilience request failed:`, error.message);
 
     if (error instanceof CircuitOpenError) {
       return res.status(503).json({
+        correlationId: req.correlationId,
         message: "Dependency circuit is unavailable",
         circuitState: dependencyCircuitBreaker.state,
         retryAfterMs: error.retryAfterMs,
@@ -232,6 +257,7 @@ app.get("/debug/resilience", async (req, res) => {
     }
 
     return res.status(error.status || 502).json({
+      correlationId: req.correlationId,
       message: "Dependency request failed after retry attempts",
       totalAttempts: attempts,
       circuitState: dependencyCircuitBreaker.state,
