@@ -24,7 +24,9 @@ async function measureRequest(url) {
       latencyMs: Number((performance.now() - start).toFixed(2)),
     };
   } catch (error) {
-    throw new Error(`Request failed for ${url}: ${error.message}`);
+    throw new Error(`Request failed for ${url}: ${error.message}`, {
+    cause: error,
+  });
   }
 }
 
