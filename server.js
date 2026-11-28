@@ -13,6 +13,7 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "127.0.0.1";
 const MOCK_DEPENDENCY_URL = process.env.MOCK_DEPENDENCY_URL;
+const MOCK_PAYMENT_URL = process.env.MOCK_PAYMENT_URL?.replace(/\/+$/, "");
 
 const DEPENDENCY_TIMEOUT_MS = Number(process.env.DEPENDENCY_TIMEOUT_MS ?? 2000);
 
@@ -27,6 +28,65 @@ function fetchDependency(correlationId) {
       "x-correlation-id": correlationId,
     },
   });
+}
+
+
+async function readPaymentResponse(response) {
+  const data = await response.json();
+
+  if (!response.ok) {
+    const error = new Error(
+      data.message ?? `Payment service returned HTTP ${response.status}`
+    );
+
+    error.status = response.status;
+    throw error;
+  }
+
+  return data;
+}
+
+async function createPaymentAtMockService({
+  orderId,
+  amount,
+  currency,
+  idempotencyKey,
+  correlationId,
+}) {
+  const response = await fetch(MOCK_PAYMENT_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": idempotencyKey,
+      "x-correlation-id": correlationId,
+    },
+    body: JSON.stringify({
+      orderId,
+      amount,
+      currency,
+    }),
+    signal: AbortSignal.timeout(DEPENDENCY_TIMEOUT_MS),
+  });
+
+  return readPaymentResponse(response);
+}
+
+async function getPaymentStatusFromMockService(
+  paymentId,
+  correlationId
+) {
+  const response = await fetch(
+    `${MOCK_PAYMENT_URL}/${encodeURIComponent(paymentId)}`,
+    {
+      method: "GET",
+      headers: {
+        "x-correlation-id": correlationId,
+      },
+      signal: AbortSignal.timeout(DEPENDENCY_TIMEOUT_MS),
+    }
+  );
+
+  return readPaymentResponse(response);
 }
 
 app.disable("x-powered-by");
@@ -87,6 +147,149 @@ app.get("/health", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+
+
+// Create payment for an order
+app.post("/orders/:orderId/payment", async (req, res) => {
+  if (!MOCK_PAYMENT_URL) {
+    return res.status(500).json({
+      correlationId: req.correlationId,
+      message: "MOCK_PAYMENT_URL is not configured",
+    });
+  }
+
+  const { orderId } = req.params;
+  const { amount, currency } = req.body ?? {};
+  const idempotencyKey = req.get("Idempotency-Key");
+
+  // Validate idempotency key
+  if (
+    typeof idempotencyKey !== "string" ||
+    !/^[A-Za-z0-9._:-]{1,128}$/.test(idempotencyKey)
+  ) {
+    return res.status(400).json({
+      correlationId: req.correlationId,
+      message: "Missing or invalid Idempotency-Key header",
+    });
+  }
+
+  // Validate payment details
+  if (
+    typeof orderId !== "string" ||
+    orderId.trim().length === 0 ||
+    typeof amount !== "number" ||
+    !Number.isFinite(amount) ||
+    amount <= 0 ||
+    typeof currency !== "string" ||
+    !/^[A-Z]{3}$/.test(currency)
+  ) {
+    return res.status(400).json({
+      correlationId: req.correlationId,
+      message: "Invalid payment details",
+    });
+  }
+
+  const paymentRequest = {
+    orderId,
+    amount,
+    currency,
+    idempotencyKey,
+    correlationId: req.correlationId,
+  };
+
+  try {
+    // STEP 1: Send the original payment request
+    const result = await createPaymentAtMockService(paymentRequest);
+
+    console.log(
+      `[${req.correlationId}] Payment request completed: ${result.payment.paymentId}`
+    );
+
+    return res.status(200).json({
+      correlationId: req.correlationId,
+      message: "Payment request completed",
+      reconciled: false,
+      payment: result.payment,
+    });
+  } catch (error) {
+    // Handle errors other than a timeout
+    if (error.name !== "TimeoutError") {
+      console.error(
+        `[${req.correlationId}] Payment request failed: ${error.message}`
+      );
+
+      return res.status(error.status || 502).json({
+        correlationId: req.correlationId,
+        message: "Payment service request failed",
+        error: error.message,
+      });
+    }
+
+    // STEP 2: The original payment request timed out
+    console.warn(
+      `[${req.correlationId}] Payment request timed out. Starting reconciliation.`
+    );
+  }
+
+  // STEP 3: Repeat the same request using the SAME idempotency key
+  try {
+    const recoveredResult = await createPaymentAtMockService(
+      paymentRequest
+    );
+
+    const paymentId = recoveredResult.payment?.paymentId;
+
+    if (!paymentId) {
+      throw new Error(
+        "Payment service did not return a payment ID during recovery"
+      );
+    }
+
+    console.log(
+      `[${req.correlationId}] Recovered payment ID: ${paymentId}`
+    );
+
+    // STEP 4: Retrieve the actual payment status using the payment ID
+    const statusResult = await getPaymentStatusFromMockService(
+      paymentId,
+      req.correlationId
+    );
+
+    const payment = statusResult.payment;
+
+    if (!payment) {
+      throw new Error("Payment service returned an invalid status response");
+    }
+
+    console.log(
+      `[${req.correlationId}] Reconciled payment status: ${payment.status}`
+    );
+
+    // STEP 5: Return the confirmed payment status
+    return res.status(payment.status === "PENDING" ? 202 : 200).json({
+      correlationId: req.correlationId,
+      message: "Payment status reconciled after request timeout",
+      reconciled: true,
+      payment,
+    });
+  } catch (reconciliationError) {
+    console.error(
+      `[${req.correlationId}] Payment reconciliation failed: ${reconciliationError.message}`
+    );
+
+    return res.status(504).json({
+      correlationId: req.correlationId,
+      message:
+        "Payment request timed out and payment status could not be confirmed",
+      paymentStatus: "UNKNOWN",
+      error: reconciliationError.message,
+      instruction:
+        "Do not retry using a new idempotency key. Reconcile using the original key.",
+    });
+  }
+});
+
 
 //CPU-blocking endpoint
 app.get("/debug/cpu-blocking", (req, res) => {

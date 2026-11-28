@@ -34,7 +34,9 @@ async function measureRequest(url) {
       calculationTimeMs: data.calculationTimeMs,
     };
   } catch (error) {
-    throw new Error(`Request failed for ${url}: ${error.message}`);
+    throw new Error(`Request failed for ${url}: ${error.message}`, {
+      cause: error,
+    });
   }
 }
 
@@ -60,29 +62,26 @@ async function main() {
   console.log(`Average baseline: ${averageBaseline.toFixed(2)} ms`);
 
   for (let round = 1; round <= 5; round++) {
-  console.log(`\n--- Worker experiment: round ${round} ---`);
+    console.log(`\n--- Worker experiment: round ${round} ---`);
 
-  const workerPromise = measureRequest(WORKER_URL);
+    const workerPromise = measureRequest(WORKER_URL);
 
-  await delay(50);
+    await delay(50);
 
-  const healthPromise = measureRequest(HEALTH_URL);
+    const healthPromise = measureRequest(HEALTH_URL);
 
-  const [worker, health] = await Promise.all([
-    workerPromise,
-    healthPromise,
-  ]);
+    const [worker, health] = await Promise.all([workerPromise, healthPromise]);
 
-  console.log(
-    `Worker: ${worker.latencyMs} ms, ` +
-    `calculation: ${worker.calculationTimeMs ?? "N/A"} ms`
-  );
+    console.log(
+      `Worker: ${worker.latencyMs} ms, ` +
+        `calculation: ${worker.calculationTimeMs ?? "N/A"} ms`,
+    );
 
-  console.log(`Health: ${health.latencyMs} ms`);
-}
+    console.log(`Health: ${health.latencyMs} ms`);
 
-  if (worker.status !== 200 || health.status !== 200) {
-    throw new Error("A request failed; check the endpoint and deployment.");
+    if (worker.status !== 200 || health.status !== 200) {
+      throw new Error("A request failed; check the endpoint and deployment.");
+    }
   }
 }
 
